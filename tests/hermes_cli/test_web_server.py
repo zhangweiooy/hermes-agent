@@ -2560,7 +2560,7 @@ class TestWebServerEndpoints:
                 return [_Platform("matrix")]
 
         monkeypatch.setattr(
-            gateway_config, "load_gateway_config", lambda: _GatewayConfig()
+            gateway_config, "load_gateway_config", lambda env=None: _GatewayConfig()
         )
         monkeypatch.setenv("MATRIX_HOME_ROOM", "!room:matrix.org")
 

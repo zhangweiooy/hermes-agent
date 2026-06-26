@@ -32,7 +32,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Mapping, Optional
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -1035,20 +1035,26 @@ def _resolve_home_env_var(platform_name: str) -> str:
     return _plugin_cron_env_var(name)
 
 
-def _get_home_target_chat_id(platform_name: str) -> str:
+def _env_get(env: Optional[Mapping[str, str]], key: str, default: str = "") -> str:
+    if env is not None:
+        return str(env.get(key, default) or "")
+    return os.getenv(key, default)
+
+
+def _get_home_target_chat_id(platform_name: str, env: Optional[Mapping[str, str]] = None) -> str:
     """Return the configured home target chat/room ID for a delivery platform."""
     env_var = _resolve_home_env_var(platform_name)
     if not env_var:
         return ""
-    value = os.getenv(env_var, "")
+    value = _env_get(env, env_var, "")
     if not value:
         legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
         if legacy:
-            value = os.getenv(legacy, "")
+            value = _env_get(env, legacy, "")
     return value
 
 
-def _get_home_target_thread_id(platform_name: str) -> Optional[str]:
+def _get_home_target_thread_id(platform_name: str, env: Optional[Mapping[str, str]] = None) -> Optional[str]:
     """Return the optional thread/topic ID for a platform home target.
 
     Telegram-only override: ``TELEGRAM_CRON_THREAD_ID`` takes precedence over
@@ -1063,14 +1069,14 @@ def _get_home_target_thread_id(platform_name: str) -> Optional[str]:
     if not env_var:
         return None
     if platform_name.lower() == "telegram":
-        cron_thread = os.getenv("TELEGRAM_CRON_THREAD_ID", "").strip()
+        cron_thread = _env_get(env, "TELEGRAM_CRON_THREAD_ID", "").strip()
         if cron_thread:
             return cron_thread
-    value = os.getenv(f"{env_var}_THREAD_ID", "").strip()
+    value = _env_get(env, f"{env_var}_THREAD_ID", "").strip()
     if not value:
         legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
         if legacy:
-            value = os.getenv(f"{legacy}_THREAD_ID", "").strip()
+            value = _env_get(env, f"{legacy}_THREAD_ID", "").strip()
     return value or None
 
 
@@ -1092,7 +1098,7 @@ def _iter_home_target_platforms():
         pass
 
 
-def cron_delivery_targets() -> list[dict]:
+def cron_delivery_targets(profile: Optional[str] = None) -> list[dict]:
     """Return the platforms a cron job can auto-deliver to.
 
     Single source of truth for any UI (dashboard dropdown, etc.) that lets a
@@ -1102,19 +1108,38 @@ def cron_delivery_targets() -> list[dict]:
     room/channel cron posts to) is set — a platform can be configured for
     interactive use but still lack the home target an unattended cron job needs.
 
-    Returns a list of dicts: ``{"id", "name", "home_target_set", "home_env_var"}``
-    ordered by the gateway's canonical platform order. Callers should always
-    prepend the implicit ``local`` option themselves — it needs no config.
+    Returns a list of dicts: ``{"id", "name", "home_target_set",
+    "home_env_var", "runtime_supported", "disabled_reason"}`` ordered by
+    the gateway's canonical platform order. Callers should always prepend the
+    implicit ``local`` option themselves — it needs no config.
     """
     targets: list[dict] = []
+    env_on_disk: Optional[Mapping[str, str]] = None
+    token = None
     try:
+        requested = (profile or "").strip()
+        use_profile_env = bool(requested and requested.lower() != "current")
+        if use_profile_env:
+            from hermes_cli.profiles import resolve_profile_env
+            from hermes_constants import set_hermes_home_override
+
+            token = set_hermes_home_override(resolve_profile_env(requested))
         from gateway.config import load_gateway_config
 
-        gateway_config = load_gateway_config()
+        if use_profile_env:
+            from hermes_cli.config import load_env
+
+            env_on_disk = load_env()
+        gateway_config = load_gateway_config(env=env_on_disk)
         connected = {p.value for p in gateway_config.get_connected_platforms()}
     except Exception:
         logger.debug("cron_delivery_targets: gateway config unavailable", exc_info=True)
         connected = set()
+    finally:
+        if token is not None:
+            from hermes_constants import reset_hermes_home_override
+
+            reset_hermes_home_override(token)
 
     for name in _iter_home_target_platforms():
         if name not in connected:
@@ -1122,12 +1147,15 @@ def cron_delivery_targets() -> list[dict]:
         if not _is_known_delivery_platform(name):
             continue
         env_var = _resolve_home_env_var(name)
+        home_target_set = bool(_get_home_target_chat_id(name, env=env_on_disk))
         targets.append(
             {
                 "id": name,
                 "name": name.replace("_", " ").title(),
-                "home_target_set": bool(_get_home_target_chat_id(name)),
+                "home_target_set": home_target_set,
                 "home_env_var": env_var or None,
+                "runtime_supported": home_target_set,
+                "disabled_reason": None if home_target_set else "home_target_missing",
             }
         )
     return targets
@@ -1325,6 +1353,7 @@ def _send_media_via_adapter(
     in ``BasePlatformAdapter._process_message_background``.
     """
     from pathlib import Path
+from typing import Any, List, Mapping, Optional
 
     from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 

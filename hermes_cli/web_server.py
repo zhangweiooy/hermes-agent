@@ -11630,7 +11630,7 @@ async def create_cron_job(body: CronJobCreate, profile: Optional[str] = None):
 
 
 @app.get("/api/cron/delivery-targets")
-async def get_cron_delivery_targets():
+async def get_cron_delivery_targets(profile: Optional[str] = None):
     """Delivery targets the cron dropdown should offer.
 
     Always includes the implicit ``local`` option. Beyond that, the list is
@@ -11640,18 +11640,49 @@ async def get_cron_delivery_targets():
     with ``home_target_set: false`` so the UI can surface it as "configure a
     home channel first" rather than hiding it.
     """
+    requested_profile = (profile or "").strip()
+    status_scope = None
+    if requested_profile and requested_profile.lower() != "current":
+        status_scope = _config_profile_scope(requested_profile)
+        status_scope.__enter__()
+
+    try:
+        runtime = read_runtime_status()
+        gateway_running = (
+            get_running_pid() is not None
+            or get_runtime_status_running_pid(runtime) is not None
+        )
+        gateway_state = runtime.get("gateway_state") if isinstance(runtime, dict) else None
+    finally:
+        if status_scope is not None:
+            status_scope.__exit__(None, None, None)
+
     targets = [
         {
             "id": "local",
             "name": "Local (save only)",
             "home_target_set": True,
             "home_env_var": None,
+            "runtime_supported": True,
+            "disabled_reason": None,
         }
     ]
     try:
         from cron.scheduler import cron_delivery_targets
 
-        targets.extend(cron_delivery_targets())
+        for target in cron_delivery_targets(profile=requested_profile or None):
+            home_target_set = bool(target.get("home_target_set"))
+            runtime_supported = bool(home_target_set and gateway_running and gateway_state != "startup_failed")
+            disabled_reason = target.get("disabled_reason")
+            if home_target_set and not runtime_supported:
+                disabled_reason = "gateway_not_running"
+            targets.append(
+                {
+                    **target,
+                    "runtime_supported": runtime_supported,
+                    "disabled_reason": None if runtime_supported else disabled_reason,
+                }
+            )
     except Exception:
         _log.exception("GET /api/cron/delivery-targets failed")
     return {"targets": targets}
@@ -11855,7 +11886,7 @@ class AutomationBlueprintInstantiate(BaseModel):
 
 
 @app.get("/api/cron/blueprints")
-async def list_cron_blueprints():
+async def list_cron_blueprints(profile: Optional[str] = None):
     """Return the blueprint catalog as form schemas for the dashboard gallery.
 
     The ``deliver`` slot's options are rewritten from the user's actually
@@ -11869,7 +11900,7 @@ async def list_cron_blueprints():
         try:
             from cron.scheduler import cron_delivery_targets
 
-            platforms = [t["id"] for t in cron_delivery_targets() if t.get("id")]
+            platforms = [t["id"] for t in cron_delivery_targets(profile=profile) if t.get("id")]
             deliver_options = ["origin", "local", *platforms]
         except Exception:
             _log.debug("cron_delivery_targets unavailable; using static deliver options", exc_info=True)

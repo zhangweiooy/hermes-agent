@@ -4173,11 +4173,13 @@ class TestCronDeliveryTargets:
 
         targets = {t["id"]: t for t in cron_delivery_targets()}
 
-        assert set(targets) == {"matrix", "telegram"}
+        assert {"matrix", "telegram"}.issubset(set(targets))
         # Configured but no home channel → surfaced, flagged for the UI.
         assert targets["matrix"]["home_target_set"] is False
+        assert targets["matrix"]["disabled_reason"] == "home_target_missing"
         assert targets["matrix"]["home_env_var"] == "MATRIX_HOME_ROOM"
         assert targets["telegram"]["home_target_set"] is False
+        assert targets["telegram"]["disabled_reason"] == "home_target_missing"
 
     def test_home_channel_set_marks_target_ready(self, monkeypatch):
         from cron.scheduler import cron_delivery_targets
@@ -4189,17 +4191,18 @@ class TestCronDeliveryTargets:
 
         assert targets["matrix"]["home_target_set"] is True
 
-    def test_unconfigured_platforms_excluded(self, monkeypatch):
+    def test_unconfigured_platforms_return_disabled(self, monkeypatch):
         from cron.scheduler import cron_delivery_targets
 
         # Only telegram is connected; matrix env var set but gateway not configured.
         self._patch_connected(monkeypatch, ["telegram"])
         monkeypatch.setenv("MATRIX_HOME_ROOM", "!room:matrix.org")
 
-        ids = {t["id"] for t in cron_delivery_targets()}
+        targets = {t["id"]: t for t in cron_delivery_targets()}
 
-        assert ids == {"telegram"}
-        assert "matrix" not in ids
+        assert "telegram" in targets
+        assert targets["matrix"]["runtime_supported"] is False
+        assert targets["matrix"]["disabled_reason"] == "not_configured"
 
     def test_no_gateway_config_returns_empty(self, monkeypatch):
         import gateway.config as gateway_config

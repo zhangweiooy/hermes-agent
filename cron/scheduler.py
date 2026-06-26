@@ -1115,6 +1115,7 @@ def cron_delivery_targets(profile: Optional[str] = None) -> list[dict]:
     """
     targets: list[dict] = []
     env_on_disk: Optional[Mapping[str, str]] = None
+    config_loaded = False
     token = None
     try:
         requested = (profile or "").strip()
@@ -1132,6 +1133,7 @@ def cron_delivery_targets(profile: Optional[str] = None) -> list[dict]:
             env_on_disk = load_env()
         gateway_config = load_gateway_config(env=env_on_disk)
         connected = {p.value for p in gateway_config.get_connected_platforms()}
+        config_loaded = True
     except Exception:
         logger.debug("cron_delivery_targets: gateway config unavailable", exc_info=True)
         connected = set()
@@ -1141,21 +1143,29 @@ def cron_delivery_targets(profile: Optional[str] = None) -> list[dict]:
 
             reset_hermes_home_override(token)
 
+    if not config_loaded:
+        return []
+
     for name in _iter_home_target_platforms():
-        if name not in connected:
-            continue
         if not _is_known_delivery_platform(name):
             continue
         env_var = _resolve_home_env_var(name)
         home_target_set = bool(_get_home_target_chat_id(name, env=env_on_disk))
+        connected_to_gateway = name in connected
+        runtime_supported = connected_to_gateway and home_target_set
+        disabled_reason = None
+        if not connected_to_gateway:
+            disabled_reason = "not_configured"
+        elif not home_target_set:
+            disabled_reason = "home_target_missing"
         targets.append(
             {
                 "id": name,
                 "name": name.replace("_", " ").title(),
                 "home_target_set": home_target_set,
                 "home_env_var": env_var or None,
-                "runtime_supported": home_target_set,
-                "disabled_reason": None if home_target_set else "home_target_missing",
+                "runtime_supported": runtime_supported,
+                "disabled_reason": disabled_reason,
             }
         )
     return targets

@@ -3541,7 +3541,7 @@ class TestCronDeliveryTargets:
                 return [_Platform(n) for n in names]
 
         monkeypatch.setattr(
-            gateway_config, "load_gateway_config", lambda: _GatewayConfig()
+            gateway_config, "load_gateway_config", lambda env=None: _GatewayConfig()
         )
 
     def test_lists_configured_platforms_flagging_missing_home_channel(self, monkeypatch):
@@ -3585,12 +3585,44 @@ class TestCronDeliveryTargets:
         import gateway.config as gateway_config
         from cron.scheduler import cron_delivery_targets
 
-        def _boom():
+        def _boom(env=None):
             raise RuntimeError("no gateway config")
 
         monkeypatch.setattr(gateway_config, "load_gateway_config", _boom)
 
         assert cron_delivery_targets() == []
+
+    def test_profile_env_marks_home_channel_without_leaking_process_env(self, monkeypatch, tmp_path):
+        import gateway.config as gateway_config
+        import hermes_cli.profiles as profiles
+        from cron.scheduler import cron_delivery_targets
+
+        profile_home = tmp_path / "profiles" / "worker"
+        profile_home.mkdir(parents=True)
+        (profile_home / ".env").write_text("MATRIX_HOME_ROOM=!profile:matrix.org\n", encoding="utf-8")
+        monkeypatch.setenv("MATRIX_HOME_ROOM", "!root:matrix.org")
+        monkeypatch.setattr(profiles, "resolve_profile_env", lambda profile: str(profile_home))
+
+        class _Platform:
+            def __init__(self, value):
+                self.value = value
+
+        class _GatewayConfig:
+            def get_connected_platforms(self):
+                return [_Platform("matrix")]
+
+        captured_env = {}
+
+        def _load_gateway_config(env=None):
+            captured_env.update(env or {})
+            return _GatewayConfig()
+
+        monkeypatch.setattr(gateway_config, "load_gateway_config", _load_gateway_config)
+
+        targets = {target["id"]: target for target in cron_delivery_targets(profile="worker")}
+
+        assert captured_env["MATRIX_HOME_ROOM"] == "!profile:matrix.org"
+        assert targets["matrix"]["home_target_set"] is True
 
 
 class TestHomeTargetEnvVarRegistry:

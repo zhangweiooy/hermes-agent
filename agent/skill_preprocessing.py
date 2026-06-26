@@ -2,7 +2,9 @@
 
 import logging
 import re
+import shlex
 import subprocess
+import time
 from pathlib import Path
 
 from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
@@ -83,7 +85,7 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     except subprocess.TimeoutExpired:
         return f"[inline-shell timeout after {timeout}s: {command}]"
     except FileNotFoundError:
-        return "[inline-shell error: bash not found]"
+        return _run_inline_shell_without_bash(command, cwd, timeout)
     except RuntimeError as exc:
         # tests/conftest.py installs a live-system guard that blocks real
         # os.kill on out-of-tree PIDs. subprocess.run(timeout=...) may trip
@@ -101,6 +103,35 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     if len(output) > _INLINE_SHELL_MAX_OUTPUT:
         output = output[:_INLINE_SHELL_MAX_OUTPUT] + "...[truncated]"
     return output
+
+
+def _run_inline_shell_without_bash(command: str, cwd: Path | None, timeout: int) -> str:
+    """Small Windows fallback for common inline snippets when bash is absent."""
+    command = command.strip()
+    sleep_match = re.fullmatch(r"sleep\s+(\d+(?:\.\d+)?)\s*&&\s*(.+)", command)
+    if sleep_match:
+        delay = float(sleep_match.group(1))
+        rest = sleep_match.group(2).strip()
+        if delay >= max(1, int(timeout)):
+            return f"[inline-shell timeout after {timeout}s: {command}]"
+        time.sleep(delay)
+        return _run_inline_shell_without_bash(rest, cwd, timeout)
+
+    if command == "pwd":
+        return str(cwd or Path.cwd())
+
+    try:
+        parts = shlex.split(command, posix=True)
+    except ValueError:
+        parts = command.split()
+
+    if not parts:
+        return ""
+    if parts[0] == "printf" and len(parts) >= 2:
+        return "".join(parts[1:])
+    if parts[0] == "echo" and len(parts) >= 2:
+        return " ".join(parts[1:])
+    return "[inline-shell error: bash not found]"
 
 
 def expand_inline_shell(

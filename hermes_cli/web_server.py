@@ -8568,9 +8568,10 @@ async def get_cron_delivery_targets(profile: Optional[str] = None):
 
         for target in cron_delivery_targets(profile=requested_profile or None):
             home_target_set = bool(target.get("home_target_set"))
-            runtime_supported = bool(home_target_set and gateway_running and gateway_state != "startup_failed")
+            configured = target.get("disabled_reason") != "not_configured"
+            runtime_supported = bool(configured and home_target_set and gateway_running and gateway_state != "startup_failed")
             disabled_reason = target.get("disabled_reason")
-            if home_target_set and not runtime_supported:
+            if configured and home_target_set and not runtime_supported:
                 disabled_reason = "gateway_not_running"
             targets.append(
                 {

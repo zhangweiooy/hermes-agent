@@ -1363,7 +1363,6 @@ def _send_media_via_adapter(
     in ``BasePlatformAdapter._process_message_background``.
     """
     from pathlib import Path
-from typing import Any, List, Mapping, Optional
 
     from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
